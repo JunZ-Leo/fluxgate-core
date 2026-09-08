@@ -1,22 +1,35 @@
-<h1 align="center">
-  <img src="Meta.png" alt="Meta Kennel" width="200">
-  <br>Meta Kernel<br>
-</h1>
+<h1 align="center">Fluxgate Core</h1>
 
-<h3 align="center">Another Mihomo Kernel.</h3>
+<h3 align="center">A compatibility-first, independently maintained proxy core.</h3>
 
 <p align="center">
-  <a href="https://goreportcard.com/report/github.com/MetaCubeX/mihomo">
-    <img src="https://goreportcard.com/badge/github.com/MetaCubeX/mihomo?style=flat-square">
+  <a href="https://goreportcard.com/report/github.com/JunZ-Leo/fluxgate-core">
+    <img src="https://goreportcard.com/badge/github.com/JunZ-Leo/fluxgate-core?style=flat-square">
   </a>
-  <img src="https://img.shields.io/github/go-mod/go-version/MetaCubeX/mihomo/Alpha?style=flat-square">
-  <a href="https://github.com/MetaCubeX/mihomo/releases">
-    <img src="https://img.shields.io/github/release/MetaCubeX/mihomo/all.svg?style=flat-square">
-  </a>
-  <a href="https://github.com/MetaCubeX/mihomo">
-    <img src="https://img.shields.io/badge/release-Meta-00b4f0?style=flat-square">
-  </a>
+  <img src="https://img.shields.io/github/go-mod/go-version/JunZ-Leo/fluxgate-core/main?style=flat-square">
+  <img src="https://img.shields.io/github/license/JunZ-Leo/fluxgate-core?style=flat-square">
 </p>
+
+Fluxgate Core is a gradual, compatibility-preserving rewrite of the
+MetaCubeX proxy core. The project keeps existing Clash-compatible
+configuration and controller behavior stable while replacing internal
+subsystems behind explicit compatibility tests.
+
+The Go module path remains `github.com/metacubex/mihomo` temporarily to avoid
+mixing a repository-wide import migration with the initial compatibility
+rewrite. It will move to the Fluxgate namespace in a dedicated change.
+
+## Rewrite status
+
+- [x] Configuration defaults and partial override compatibility baseline
+- [x] Plain and age-encrypted configuration loading boundary
+- [x] Configuration file source loading boundary
+- [x] Rule payload parsing boundary
+- [x] Simple rule construction boundary
+- [ ] DNS parsing and resolver boundary
+- [ ] Controller API boundary
+- [ ] Inbound and outbound protocol boundaries
+- [ ] TUN and platform integration boundaries
 
 ## Features
 
@@ -27,31 +40,36 @@
 - Remote groups allow users to implement powerful rules. Supports automatic fallback, load balancing or auto select node
   based off latency
 - Remote providers, allowing users to get node lists remotely instead of hard-coding in config
-- Netfilter TCP redirecting. Deploy Mihomo on your Internet gateway with `iptables`.
+- Netfilter TCP redirecting for gateway deployments with `iptables`.
 - Comprehensive HTTP RESTful API controller
 
 ## Dashboard
 
-A web dashboard with first-class support for this project has been created; it can be checked out at [metacubexd](https://github.com/MetaCubeX/metacubexd).
+The controller API remains compatible with dashboards such as
+[metacubexd](https://github.com/MetaCubeX/metacubexd).
 
-## Configration example
+## Configuration example
 
-Configuration example is located at [/docs/config.yaml](https://github.com/MetaCubeX/mihomo/blob/Alpha/docs/config.yaml).
+The configuration example is available at
+[`docs/config.yaml`](https://github.com/JunZ-Leo/fluxgate-core/blob/main/docs/config.yaml).
 
 ## Docs
 
-Documentation can be found in [mihomo Docs](https://wiki.metacubex.one/).
+Until independent documentation is complete, the compatible configuration and
+API surfaces are documented in the
+[upstream documentation](https://wiki.metacubex.one/).
 
 ## For development
 
 Requirements:
 [Go 1.20 or newer](https://go.dev/dl/)
 
-Build mihomo:
+Build Fluxgate Core:
 
 ```shell
-git clone https://github.com/MetaCubeX/mihomo.git
-cd mihomo && go mod download
+git clone https://github.com/JunZ-Leo/fluxgate-core.git
+cd fluxgate-core
+go mod download
 go build
 ```
 
@@ -87,6 +105,8 @@ API.
 
 ## Credits
 
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo), the upstream codebase
+  and compatibility reference
 - [Dreamacro/clash](https://github.com/Dreamacro/clash)
 - [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
 - [riobard/go-shadowsocks2](https://github.com/riobard/go-shadowsocks2)
@@ -96,6 +116,7 @@ API.
 
 ## License
 
-This software is released under the GPL-3.0 license.
+This software is released under the GPL-3.0 license. The repository preserves
+the upstream Git history and attribution; see [`NOTICE`](NOTICE).
 
 **In addition, any downstream projects not affiliated with `MetaCubeX` shall not contain the word `mihomo` in their names.**

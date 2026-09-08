@@ -1,0 +1,15 @@
+Fluxgate Core
+
+This project is derived from the MetaCubeX proxy core and preserves its Git
+history. The original project and its contributors retain copyright in their
+respective contributions.
+
+Upstream project:
+https://github.com/MetaCubeX/mihomo
+
+Fluxgate Core is independently maintained and is not affiliated with or
+endorsed by MetaCubeX. Compatibility references to Mihomo and Clash describe
+supported configuration and API behavior, not the name of this project.
+
+The source code is distributed under the GNU General Public License version 3.
+See LICENSE for the full license text.
