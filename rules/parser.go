@@ -15,7 +15,10 @@ func ParseRule(tp, payload, target string, params []string, subRules map[string]
 	}
 
 	if parsed, handled, err := parseSimpleRule(tp, payload, target); handled {
-		return parsed, err
+		if err != nil {
+			return nil, err
+		}
+		return parsed, nil
 	}
 
 	switch tp {
