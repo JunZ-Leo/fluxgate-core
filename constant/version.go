@@ -1,8 +1,10 @@
 package constant
 
+const ProductName = "fluxgate"
+
 var (
 	Meta       = true
-	Version    = "1.10.0"
+	Version    = "dev"
 	BuildTime  = "unknown time"
 	MihomoName = "mihomo"
 )
