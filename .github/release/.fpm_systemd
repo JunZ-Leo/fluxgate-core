@@ -1,18 +1,19 @@
 -s dir
---name mihomo
+--name fluxgate
 --category net
 --license GPL-3.0-or-later
---description "The universal proxy platform."
---url "https://wiki.metacubex.one/"
---maintainer "MetaCubeX <none@example.com>"
---deb-field "Bug: https://github.com/MetaCubeX/mihomo/issues"
+--description "Fluxgate Core, a compatibility-first proxy core."
+--url "https://github.com/JunZ-Leo/fluxgate-core"
+--maintainer "Fluxgate Core contributors"
+--deb-field "Bug: https://github.com/JunZ-Leo/fluxgate-core/issues"
 --no-deb-generate-changes
---config-files /etc/mihomo/config.yaml
+--config-files /etc/fluxgate/config.yaml
 
-.github/release/config.yaml=/etc/mihomo/config.yaml
+.github/release/config.yaml=/etc/fluxgate/config.yaml
 
-.github/release/mihomo.service=/usr/lib/systemd/system/mihomo.service
-.github/release/mihomo@.service=/usr/lib/systemd/system/mihomo@.service
+.github/release/fluxgate.service=/usr/lib/systemd/system/fluxgate.service
+.github/release/fluxgate@.service=/usr/lib/systemd/system/fluxgate@.service
 
 
-LICENSE=/usr/share/licenses/mihomo/LICENSE
+LICENSE=/usr/share/licenses/fluxgate/LICENSE
+NOTICE=/usr/share/licenses/fluxgate/NOTICE

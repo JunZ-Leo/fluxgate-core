@@ -1,5 +1,5 @@
 {
-  description = "Another Mihomo Kernel";
+  description = "Fluxgate Core, a compatibility-first proxy core";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/master";
 
@@ -15,7 +15,8 @@
           };
         in
         rec {
-          packages.default = pkgs.mihomo-meta;
+          packages.fluxgate = pkgs.fluxgate;
+          packages.default = packages.fluxgate;
         }
       ) //
     (
@@ -23,8 +24,8 @@
       {
         overlay = final: prev: {
 
-          mihomo-meta = final.buildGo119Module {
-            pname = "mihomo-meta";
+          fluxgate = final.buildGo119Module {
+            pname = "fluxgate";
             inherit version;
             src = ./.;
 
@@ -50,7 +51,7 @@
             doCheck = false;
 
             postInstall = ''
-              mv $out/bin/mihomo $out/bin/mihomo-meta
+              mv $out/bin/mihomo $out/bin/fluxgate
             '';
 
           };
@@ -58,4 +59,3 @@
       }
     );
 }
-

@@ -20,9 +20,9 @@ type repository struct {
 	env                             []string
 }
 
-func newRepository(t *testing.T) *repository {
+func newFixture(t *testing.T) string {
 	t.Helper()
-	// Keep all disposable Git repositories inside the project, not the system temp directory.
+	// Keep disposable fixtures inside the project, not the system temp directory.
 	root, err := filepath.Abs(fmt.Sprintf(".release-contract-%d-%d", os.Getpid(), atomic.AddUint64(&fixtureNumber, 1)))
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +35,12 @@ func newRepository(t *testing.T) *repository {
 			t.Error(err)
 		}
 	})
+	return root
+}
+
+func newRepository(t *testing.T) *repository {
+	t.Helper()
+	root := newFixture(t)
 	script, err := filepath.Abs("../scripts/release.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -449,6 +455,22 @@ func TestWorkflowContract(t *testing.T) {
 	equal("tag version", tag.Env["RELEASE_VERSION"], "${{ needs.metadata.outputs.version }}")
 	equal("tag SHA", tag.Env["RELEASE_SHA"], "${{ needs.metadata.outputs.sha }}")
 	releaseSteps := workflow.Jobs["Upload-Release"].Steps
+	downloadIndex, checksumsIndex, tagIndex := -1, -1, -1
+	for i, s := range releaseSteps {
+		switch {
+		case s.Uses == "actions/download-artifact@v8":
+			downloadIndex = i
+			equal("merge before checksums", s.With["merge-multiple"], "true")
+			equal("checksum artifact directory", s.With["path"], "bin/")
+		case s.Name == "Generate release checksums":
+			checksumsIndex = i
+		case s.Name == tag.Name:
+			tagIndex = i
+		}
+	}
+	if downloadIndex < 0 || checksumsIndex <= downloadIndex || checksumsIndex >= tagIndex {
+		t.Error("checksums must be generated after artifact merging and before tagging")
+	}
 	equal("tag guard precedes publication", releaseSteps[len(releaseSteps)-2].Name, tag.Name)
 	equal("publication is last", releaseSteps[len(releaseSteps)-1].Name, "Upload Release")
 	release := step("Upload-Release", "Upload Release")

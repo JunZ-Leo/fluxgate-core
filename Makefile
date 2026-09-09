@@ -1,4 +1,4 @@
-NAME=mihomo
+NAME=fluxgate
 BINDIR=bin
 BRANCH=$(shell git branch --show-current)
 ifeq ($(BRANCH),Alpha)
@@ -6,9 +6,9 @@ VERSION=alpha-$(shell git rev-parse --short HEAD)
 else ifeq ($(BRANCH),Beta)
 VERSION=beta-$(shell git rev-parse --short HEAD)
 else ifeq ($(BRANCH),)
-VERSION=$(shell git describe --tags)
+VERSION=$(shell git describe --tags --exact-match 2>/dev/null || echo dev-$(shell git rev-parse --short HEAD))
 else
-VERSION=$(shell git rev-parse --short HEAD)
+VERSION=dev-$(shell git rev-parse --short HEAD)
 endif
 
 BUILDTIME=$(shell date -u)
@@ -203,4 +203,3 @@ clean:
 
 CLANG ?= clang-14
 CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
-

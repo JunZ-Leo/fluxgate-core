@@ -2,13 +2,17 @@ package updater
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,25 +28,21 @@ import (
 )
 
 const (
-	baseReleaseURL    = "https://github.com/MetaCubeX/mihomo/releases/latest/download/"
-	versionReleaseURL = "https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt"
+	coreReleaseURL = "https://github.com/JunZ-Leo/fluxgate-core/releases/"
 
-	baseAlphaURL    = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/"
-	versionAlphaURL = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt"
+	// MaxPackageFileSize bounds compressed downloads, including gVisor builds.
+	MaxPackageFileSize = 128 * 1024 * 1024
+	maxExecutableSize  = 512 * 1024 * 1024
+	maxManifestSize    = 1024 * 1024
 
-	// MaxPackageFileSize is a maximum package file length in bytes. The largest
-	// package whose size is limited by this constant currently has the size of
-	// approximately 32 MiB.
-	MaxPackageFileSize = 32 * 1024 * 1024
-)
-
-const (
 	ReleaseChannel = "release"
 	AlphaChannel   = "alpha"
 )
 
-// CoreUpdater is the mihomo updater.
-// modify from https://github.com/AdguardTeam/AdGuardHome/blob/595484e0b3fb4c457f9bb727a6b94faa78a66c5f/internal/updater/updater.go
+var stableVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+// CoreUpdater updates Fluxgate without modifying another installed core.
+// Originally adapted from AdGuardHome's internal/updater.
 type CoreUpdater struct {
 	mu sync.Mutex
 }
@@ -50,425 +50,318 @@ type CoreUpdater struct {
 var DefaultCoreUpdater = CoreUpdater{}
 
 func (u *CoreUpdater) CoreBaseName() string {
-	switch runtime.GOARCH {
+	return coreBaseName(runtime.GOOS, runtime.GOARCH, features.GOARM, features.GOMIPS, features.GOAMD64)
+}
+
+func coreBaseName(goos, goarch, goarm, gomips, goamd64 string) string {
+	base := C.ProductName + "-" + goos + "-" + goarch
+	switch goarch {
 	case "arm":
-		// mihomo-linux-armv5
-		return fmt.Sprintf("mihomo-%s-%sv%s", runtime.GOOS, runtime.GOARCH, features.GOARM)
+		level, _, _ := strings.Cut(goarm, ",")
+		return base + "v" + level
 	case "arm64":
-		if runtime.GOOS == "android" {
-			// mihomo-android-arm64-v8
-			return fmt.Sprintf("mihomo-%s-%s-v8", runtime.GOOS, runtime.GOARCH)
-		} else {
-			// mihomo-linux-arm64
-			return fmt.Sprintf("mihomo-%s-%s", runtime.GOOS, runtime.GOARCH)
+		if goos == "android" {
+			return base + "-v8"
 		}
 	case "mips", "mipsle":
-		// mihomo-linux-mips-hardfloat
-		return fmt.Sprintf("mihomo-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOMIPS)
+		return base + "-" + gomips
 	case "amd64":
-		// mihomo-linux-amd64-v1
-		return fmt.Sprintf("mihomo-%s-%s-%s", runtime.GOOS, runtime.GOARCH, features.GOAMD64)
+		return base + "-" + goamd64
+	}
+	return base
+}
+
+func releaseSource(channel string) (string, error) {
+	switch strings.ToLower(channel) {
+	case "", "auto", ReleaseChannel:
+		return coreReleaseURL, nil
+	case AlphaChannel:
+		return "", fmt.Errorf("Fluxgate self-update supports stable releases only; install prereleases manually")
 	default:
-		// mihomo-linux-386
-		// mihomo-linux-mips64
-		// mihomo-linux-riscv64
-		// mihomo-linux-s390x
-		return fmt.Sprintf("mihomo-%s-%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("unsupported update channel: %s", channel)
 	}
 }
 
-func (u *CoreUpdater) Update(currentExePath string, channel string, force bool) (err error) {
+func (u *CoreUpdater) Update(currentExePath, channel string, force bool) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	source, err := releaseSource(channel)
+	if err != nil {
+		return err
+	}
+	return u.update(currentExePath, source, force)
+}
 
+func (u *CoreUpdater) update(currentExePath, source string, force bool) error {
 	info, err := os.Stat(currentExePath)
 	if err != nil {
 		return fmt.Errorf("check currentExePath %q: %w", currentExePath, err)
 	}
-
-	baseURL := baseAlphaURL
-	versionURL := versionAlphaURL
-	switch strings.ToLower(channel) {
-	case ReleaseChannel:
-		baseURL = baseReleaseURL
-		versionURL = versionReleaseURL
-	case AlphaChannel:
-		break
-	default: // auto
-		if !strings.HasPrefix(C.Version, "alpha") {
-			baseURL = baseReleaseURL
-			versionURL = versionReleaseURL
-		}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("current executable is not a regular file")
 	}
-
-	latestVersion, err := u.getLatestVersion(versionURL)
-	if err != nil {
-		return fmt.Errorf("get latest version: %w", err)
-	}
-	log.Infoln("current version %s, latest version %s", C.Version, latestVersion)
-
-	if latestVersion == C.Version && !force {
-		// don't change this output, some downstream dependencies on the upgrader's output fields
-		return fmt.Errorf("update error: already using latest version %s", C.Version)
-	}
-
-	defer func() {
-		if err != nil {
-			log.Errorln("updater: failed: %v", err)
-		} else {
-			log.Infoln("updater: finished")
-		}
-	}()
-
-	// ---- prepare ----
-	mihomoBaseName := u.CoreBaseName()
-	packageName := mihomoBaseName + "-" + latestVersion
-	if runtime.GOOS == "windows" {
-		packageName = packageName + ".zip"
-	} else {
-		packageName = packageName + ".gz"
-	}
-	packageURL := baseURL + packageName
-	log.Infoln("updater: updating using url: %s", packageURL)
-
-	workDir := filepath.Dir(currentExePath)
-	backupDir := filepath.Join(workDir, "meta-backup")
-	updateDir := filepath.Join(workDir, "meta-update")
-	packagePath := filepath.Join(updateDir, packageName)
-	//log.Infoln(packagePath)
-
-	updateExeName := mihomoBaseName
-	if runtime.GOOS == "windows" {
-		updateExeName = updateExeName + ".exe"
-	}
-	log.Infoln("updateExeName: %s", updateExeName)
-	updateExePath := filepath.Join(updateDir, updateExeName)
-	backupExePath := filepath.Join(backupDir, filepath.Base(currentExePath))
-
-	defer u.clean(updateDir)
-
-	err = u.download(updateDir, packagePath, packageURL)
-	if err != nil {
-		return fmt.Errorf("downloading: %w", err)
-	}
-
-	err = u.unpack(updateDir, packagePath, info.Mode())
-	if err != nil {
-		return fmt.Errorf("unpacking: %w", err)
-	}
-
-	err = u.backup(currentExePath, backupExePath, backupDir)
-	if err != nil {
-		return fmt.Errorf("backuping: %w", err)
-	}
-
-	err = u.copyFile(updateExePath, currentExePath)
-	if err != nil {
-		return fmt.Errorf("replacing: %w", err)
-	}
-
-	return nil
-}
-
-func (u *CoreUpdater) getLatestVersion(versionURL string) (version string, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-	resp, err := mihomoHttp.HttpRequest(ctx, versionURL, http.MethodGet, nil, nil, mihomoHttp.WithCAOption(ca.Option{ZeroTrust: true}))
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		closeErr := resp.Body.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	content := strings.TrimRight(string(body), "\n")
-	return content, nil
-}
-
-// download package file and save it to disk
-func (u *CoreUpdater) download(updateDir, packagePath, packageURL string) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
-	defer cancel()
-	resp, err := mihomoHttp.HttpRequest(ctx, packageURL, http.MethodGet, nil, nil, mihomoHttp.WithCAOption(ca.Option{ZeroTrust: true}))
-	if err != nil {
-		return fmt.Errorf("http request failed: %w", err)
-	}
-
-	defer func() {
-		closeErr := resp.Body.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	log.Debugln("updateDir %s", updateDir)
-	err = os.Mkdir(updateDir, 0o755)
-	if err != nil {
-		return fmt.Errorf("mkdir error: %w", err)
-	}
-
-	log.Debugln("updater: saving package to file %s", packagePath)
-	// Create the output file
-	wc, err := os.OpenFile(packagePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
-	if err != nil {
-		return fmt.Errorf("os.OpenFile(%s): %w", packagePath, err)
-	}
-
-	defer func() {
-		closeErr := wc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	log.Debugln("updater: reading http body")
-	// This use of io.Copy is now safe, because we limited body's Reader.
-	n, err := io.Copy(wc, io.LimitReader(resp.Body, MaxPackageFileSize))
-	if err != nil {
-		return fmt.Errorf("io.Copy(): %w", err)
-	}
-	if n == MaxPackageFileSize {
-		// Use whether n is equal to MaxPackageFileSize to determine whether the limit has been reached.
-		// It is also possible that the size of the downloaded file is exactly the same as the maximum limit,
-		// but we should not consider this too rare situation.
-		return fmt.Errorf("attempted to read more than %d bytes", MaxPackageFileSize)
-	}
-	log.Debugln("updater: downloaded package to file %s", packagePath)
-
-	return nil
-}
-
-// unpack extracts the files from the downloaded archive.
-func (u *CoreUpdater) unpack(updateDir, packagePath string, fileMode os.FileMode) error {
-	log.Infoln("updater: unpacking package")
-	if strings.HasSuffix(packagePath, ".zip") {
-		_, err := u.zipFileUnpack(packagePath, updateDir, fileMode)
-		if err != nil {
-			return fmt.Errorf(".zip unpack failed: %w", err)
-		}
-
-	} else if strings.HasSuffix(packagePath, ".gz") {
-		_, err := u.gzFileUnpack(packagePath, updateDir, fileMode)
-		if err != nil {
-			return fmt.Errorf(".gz unpack failed: %w", err)
-		}
-
-	} else {
-		return fmt.Errorf("unknown package extension")
-	}
-
-	return nil
-}
-
-// backup creates a backup of the current executable file.
-func (u *CoreUpdater) backup(currentExePath, backupExePath, backupDir string) (err error) {
-	log.Infoln("updater: backing up current ExecFile:%s to %s", currentExePath, backupExePath)
-	_ = os.Mkdir(backupDir, 0o755)
-
-	// On Windows, since the running executable cannot be overwritten or deleted, it uses os.Rename to move the file to the backup path.
-	// On other platforms, it copies the file to the backup path, preserving the original file and its permissions.
-	// The backup directory is created if it does not exist.
-	if runtime.GOOS == "windows" {
-		err = os.Rename(currentExePath, backupExePath)
-	} else {
-		err = u.copyFile(currentExePath, backupExePath)
-	}
+	// Resolve a user-created executable symlink instead of replacing the link.
+	currentExePath, err = filepath.EvalSymlinks(currentExePath)
 	if err != nil {
 		return err
 	}
+	version, err := u.getLatestVersion(source + "latest/download/version.txt")
+	if err != nil {
+		return fmt.Errorf("get latest version: %w", err)
+	}
+	if version == C.Version && !force {
+		// Some controllers depend on this existing error text.
+		return fmt.Errorf("update error: already using latest version %s", C.Version)
+	}
 
+	baseName := u.CoreBaseName()
+	exeName := baseName
+	extension := ".gz"
+	if runtime.GOOS == "windows" {
+		extension = ".zip"
+		exeName += ".exe"
+	}
+	packageName := baseName + "-" + version + extension
+	// Pin both the manifest and archive to the version we actually selected.
+	versionURL := source + "download/" + version + "/"
+	manifest, err := readCoreResource(versionURL+"checksums.txt", maxManifestSize)
+	if err != nil {
+		return fmt.Errorf("get checksums: %w", err)
+	}
+	expectedHash, err := checksumFor(manifest, packageName)
+	if err != nil {
+		return err
+	}
+	workDir := filepath.Dir(currentExePath)
+	updateDir, err := os.MkdirTemp(workDir, ".fluxgate-update-")
+	if err != nil {
+		return fmt.Errorf("create update directory: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(updateDir); err != nil {
+			log.Warnln("updater: cleanup failed: %v", err)
+		}
+	}()
+	packagePath := filepath.Join(updateDir, packageName)
+	if err := u.download(packagePath, versionURL+packageName, expectedHash); err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	updateExePath, err := unpackCore(packagePath, updateDir, exeName, info.Mode())
+	if err != nil {
+		return fmt.Errorf("unpacking: %w", err)
+	}
+	backupDir := filepath.Join(workDir, "fluxgate-backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return fmt.Errorf("create backup directory: %w", err)
+	}
+	backupPath := filepath.Join(backupDir, filepath.Base(currentExePath))
+	if err := u.backup(currentExePath, backupPath); err != nil {
+		return fmt.Errorf("backuping: %w", err)
+	}
+	if err := os.Rename(updateExePath, currentExePath); err != nil {
+		if runtime.GOOS == "windows" {
+			if restoreErr := os.Rename(backupPath, currentExePath); restoreErr != nil {
+				return fmt.Errorf("replacing: %w; restoring backup: %w", err, restoreErr)
+			}
+		}
+		return fmt.Errorf("replacing: %w", err)
+	}
+	log.Infoln("updater: updated Fluxgate to %s", version)
 	return nil
 }
 
-// clean removes the temporary directory itself and all it's contents.
-func (u *CoreUpdater) clean(updateDir string) {
-	_ = os.RemoveAll(updateDir)
+func coreResponse(url string, timeout time.Duration) (*http.Response, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	resp, err := mihomoHttp.HttpRequest(ctx, url, http.MethodGet, nil, nil, mihomoHttp.WithCAOption(ca.Option{ZeroTrust: true}))
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		cancel()
+		return nil, nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
+	}
+	return resp, cancel, nil
 }
 
-// Unpack a single .gz file to the specified directory
-// Existing files are overwritten
-// All files are created inside outDir, subdirectories are not created
-// Return the output file name
-func (u *CoreUpdater) gzFileUnpack(gzfile, outDir string, fileMode os.FileMode) (outputName string, err error) {
-	f, err := os.Open(gzfile)
+func readCoreResource(url string, limit int64) ([]byte, error) {
+	resp, cancel, err := coreResponse(url, 5*time.Second)
 	if err != nil {
-		return "", fmt.Errorf("os.Open(): %w", err)
+		return nil, err
 	}
-
-	defer func() {
-		closeErr := f.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	gzReader, err := gzip.NewReader(f)
+	defer cancel()
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return "", fmt.Errorf("gzip.NewReader(): %w", err)
+		return nil, err
 	}
-
-	defer func() {
-		closeErr := gzReader.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-	// Get the original file name from the .gz file header
-	originalName := gzReader.Header.Name
-	if originalName == "" {
-		// Fallback: remove the .gz extension from the input file name if the header doesn't provide the original name
-		originalName = filepath.Base(gzfile)
-		originalName = strings.TrimSuffix(originalName, ".gz")
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
-
-	outputName = filepath.Join(outDir, originalName)
-
-	// Create the output file
-	wc, err := os.OpenFile(outputName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode)
-	if err != nil {
-		return "", fmt.Errorf("os.OpenFile(%s): %w", outputName, err)
-	}
-
-	defer func() {
-		closeErr := wc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	// Copy the contents of the gzReader to the output file
-	_, err = io.Copy(wc, gzReader)
-	if err != nil {
-		return "", fmt.Errorf("io.Copy(): %w", err)
-	}
-
-	return outputName, nil
+	return data, nil
 }
 
-// Unpack a single file from .zip file to the specified directory
-// Existing files are overwritten
-// All files are created inside 'outDir', subdirectories are not created
-// Return the output file name
-func (u *CoreUpdater) zipFileUnpack(zipfile, outDir string, fileMode os.FileMode) (outputName string, err error) {
-	zrc, err := zip.OpenReader(zipfile)
+func (u *CoreUpdater) getLatestVersion(url string) (string, error) {
+	data, err := readCoreResource(url, 128)
 	if err != nil {
-		return "", fmt.Errorf("zip.OpenReader(): %w", err)
+		return "", err
 	}
-
-	defer func() {
-		closeErr := zrc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-	if len(zrc.File) == 0 {
-		return "", fmt.Errorf("no files in the zip archive")
+	version := strings.TrimRight(string(data), "\r\n")
+	if !stableVersion.MatchString(version) {
+		return "", fmt.Errorf("invalid stable Fluxgate version: %q", version)
 	}
-
-	// Assuming the first file in the zip archive is the target file
-	zf := zrc.File[0]
-	var rc io.ReadCloser
-	rc, err = zf.Open()
-	if err != nil {
-		return "", fmt.Errorf("zip file Open(): %w", err)
-	}
-
-	defer func() {
-		closeErr := rc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-	fi := zf.FileInfo()
-	name := fi.Name()
-	outputName = filepath.Join(outDir, name)
-
-	if fi.IsDir() {
-		return "", fmt.Errorf("the target file is a directory")
-	}
-
-	var wc io.WriteCloser
-	wc, err = os.OpenFile(outputName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode)
-	if err != nil {
-		return "", fmt.Errorf("os.OpenFile(): %w", err)
-	}
-
-	defer func() {
-		closeErr := wc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-	_, err = io.Copy(wc, rc)
-	if err != nil {
-		return "", fmt.Errorf("io.Copy(): %w", err)
-	}
-
-	return outputName, nil
+	return version, nil
 }
 
-// Copy file on disk
-func (u *CoreUpdater) copyFile(src, dst string) (err error) {
-	rc, err := os.Open(src)
+func checksumFor(manifest []byte, name string) ([]byte, error) {
+	var digest []byte
+	for _, line := range strings.Split(string(manifest), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || strings.TrimPrefix(strings.TrimPrefix(fields[1], "*"), "./") != name {
+			continue
+		}
+		if digest != nil {
+			return nil, fmt.Errorf("duplicate checksum for %s", name)
+		}
+		var err error
+		digest, err = hex.DecodeString(fields[0])
+		if err != nil || len(digest) != sha256.Size {
+			return nil, fmt.Errorf("invalid SHA256 checksum for %s", name)
+		}
+	}
+	if digest == nil {
+		return nil, fmt.Errorf("checksum missing for %s", name)
+	}
+	return digest, nil
+}
+
+func copyBounded(dst io.Writer, src io.Reader, limit int64) error {
+	n, err := io.Copy(dst, io.LimitReader(src, limit+1))
 	if err != nil {
-		return fmt.Errorf("os.Open(%s): %w", src, err)
+		return err
 	}
-
-	defer func() {
-		closeErr := rc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	info, err := rc.Stat()
-	if err != nil {
-		return fmt.Errorf("rc.Stat(): %w", err)
+	if n > limit {
+		return fmt.Errorf("content exceeds %d bytes", limit)
 	}
-
-	// Create the output file
-	// If the file does not exist, creates it with permissions perm (before umask);
-	// otherwise truncates it before writing, without changing permissions.
-	wc, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		// On some file system (such as Android's /data) maybe return error: "text file busy"
-		// Let's delete the target file and recreate it
-		err = os.Remove(dst)
-		if err != nil {
-			return fmt.Errorf("os.Remove(%s): %w", dst, err)
-		}
-		wc, err = os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-		if err != nil {
-			return fmt.Errorf("os.OpenFile(%s): %w", dst, err)
-		}
-	}
-
-	defer func() {
-		closeErr := wc.Close()
-		if closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-
-	_, err = io.Copy(wc, rc)
-	if err != nil {
-		return fmt.Errorf("io.Copy(): %w", err)
-	}
-
-	if runtime.GOOS == "darwin" {
-		err = exec.Command("/usr/bin/codesign", "--sign", "-", dst).Run()
-		if err != nil {
-			log.Warnln("codesign failed: %v", err)
-		}
-	}
-
-	log.Infoln("updater: copy: %s to %s", src, dst)
 	return nil
+}
+
+func (u *CoreUpdater) download(packagePath, url string, expectedHash []byte) error {
+	resp, cancel, err := coreResponse(url, 90*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	defer resp.Body.Close()
+	w, err := os.OpenFile(packagePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	hash := sha256.New()
+	copyErr := copyBounded(io.MultiWriter(w, hash), resp.Body, MaxPackageFileSize)
+	closeErr := w.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !bytes.Equal(hash.Sum(nil), expectedHash) {
+		return fmt.Errorf("SHA256 checksum mismatch")
+	}
+	return nil
+}
+
+func unpackCore(packagePath, outDir, expectedName string, mode os.FileMode) (string, error) {
+	if strings.HasSuffix(packagePath, ".zip") {
+		r, err := zip.OpenReader(packagePath)
+		if err != nil {
+			return "", err
+		}
+		defer r.Close()
+		if len(r.File) != 1 || r.File[0].Name != expectedName || !r.File[0].Mode().IsRegular() {
+			return "", fmt.Errorf("archive must contain only %s", expectedName)
+		}
+		entry, err := r.File[0].Open()
+		if err != nil {
+			return "", err
+		}
+		defer entry.Close()
+		return writeExecutable(entry, outDir, expectedName, mode)
+	}
+	if !strings.HasSuffix(packagePath, ".gz") {
+		return "", fmt.Errorf("unknown package extension")
+	}
+	f, err := os.Open(packagePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	input := bufio.NewReader(f)
+	r, err := gzip.NewReader(input)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	r.Multistream(false)
+	if r.Name != "" && r.Name != expectedName {
+		return "", fmt.Errorf("archive must contain only %s", expectedName)
+	}
+	output, err := writeExecutable(r, outDir, expectedName, mode)
+	if err != nil {
+		return "", err
+	}
+	if _, err := input.Peek(1); err != io.EOF {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("archive contains trailing data or multiple gzip members")
+	}
+	return output, nil
+}
+
+func writeExecutable(r io.Reader, outDir, name string, mode os.FileMode) (string, error) {
+	output := filepath.Join(outDir, name)
+	f, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
+	if err != nil {
+		return "", err
+	}
+	err = copyBounded(f, r, maxExecutableSize)
+	if err == nil {
+		err = f.Chmod(mode.Perm())
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return output, nil
+}
+
+func (u *CoreUpdater) backup(currentPath, backupPath string) error {
+	if runtime.GOOS == "windows" {
+		return os.Rename(currentPath, backupPath)
+	}
+	src, err := os.Open(currentPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	dst, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }

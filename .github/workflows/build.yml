@@ -262,14 +262,18 @@ jobs:
         GOMIPS: ${{matrix.jobs.gomips}}
       run: |
         go env
-        go build -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
+        BINARY=fluxgate
         if [ "${{matrix.jobs.goos}}" = "windows" ]; then
-          cp mihomo.exe mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
-          zip -r mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.zip mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
+          BINARY=fluxgate.exe
+        fi
+        go build -v -o "$BINARY" -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
+        if [ "${{matrix.jobs.goos}}" = "windows" ]; then
+          cp fluxgate.exe fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
+          zip -r fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.zip fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
         else
-          cp mihomo mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
-          gzip -c mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}} > mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.gz
-          rm mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
+          cp fluxgate fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
+          gzip -c fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}} > fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.gz
+          rm fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
         fi
 
     - name: Package DEB
@@ -281,9 +285,9 @@ jobs:
 
         fpm -t deb \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.deb" \
+          -p "fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.deb" \
           --architecture ${{ matrix.jobs.debian }} \
-          mihomo=/usr/bin/mihomo
+          fluxgate=/usr/bin/fluxgate
 
     - name: Package RPM
       if: matrix.jobs.rpm != ''
@@ -294,9 +298,9 @@ jobs:
 
         fpm -t rpm \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.rpm" \
+          -p "fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.rpm" \
           --architecture ${{ matrix.jobs.rpm }} \
-          mihomo=/usr/bin/mihomo
+          fluxgate=/usr/bin/fluxgate
 
     - name: Package Pacman
       if: matrix.jobs.pacman != ''
@@ -308,9 +312,9 @@ jobs:
 
         fpm -t pacman \
           -v "${PackageVersion}" \
-          -p "mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.pkg.tar.zst" \
+          -p "fluxgate-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.pkg.tar.zst" \
           --architecture ${{ matrix.jobs.pacman }} \
-          mihomo=/usr/bin/mihomo
+          fluxgate=/usr/bin/fluxgate
 
     - name: Pack Golang Toolchain
       if: ${{ matrix.jobs.goversion == '' && matrix.jobs.tarball == 'tarball' }}
@@ -337,15 +341,14 @@ jobs:
       with:
         name: "${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}"
         path: |
-          mihomo*.gz
-          mihomo*.deb
-          mihomo*.rpm
-          mihomo*.pkg.tar.zst
-          mihomo*.zip
+          fluxgate*.gz
+          fluxgate*.deb
+          fluxgate*.rpm
+          fluxgate*.pkg.tar.zst
+          fluxgate*.zip
           toolchain.tar.gz
           vendor.tar.gz
           version.txt
-          checksums.txt
 
   Upload-Release:
     permissions:
@@ -367,6 +370,15 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R
         working-directory: bin
+
+      - name: Generate release checksums
+        run: |
+          set -euo pipefail
+          cd bin
+          find . -maxdepth 1 -type f ! -name checksums.txt -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 -r sha256sum > checksums.txt
+          test -s checksums.txt
 
       - name: Ensure tag points to the built commit
         env:

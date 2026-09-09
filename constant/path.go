@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/constant/features"
 )
 
+// Name is retained for protocol compatibility; installation paths use ProductName.
 const Name = "mihomo"
 
 var (
@@ -23,19 +24,21 @@ var (
 
 // Path is used to get the configuration path
 //
-// on Unix systems, `$HOME/.config/mihomo`.
-// on Windows, `%USERPROFILE%/.config/mihomo`.
-var Path = func() *path {
+// on Unix systems, `$HOME/.config/fluxgate`.
+// on Windows, `%USERPROFILE%/.config/fluxgate`.
+var Path = defaultPath()
+
+func defaultPath() *path {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		homeDir, _ = os.Getwd()
 	}
 	allowUnsafePath, _ := strconv.ParseBool(os.Getenv("SKIP_SAFE_PATH_CHECK"))
-	homeDir = P.Join(homeDir, ".config", Name)
+	homeDir = P.Join(homeDir, ".config", ProductName)
 
 	if _, err = os.Stat(homeDir); err != nil {
 		if configHome, ok := os.LookupEnv("XDG_CONFIG_HOME"); ok {
-			homeDir = P.Join(configHome, Name)
+			homeDir = P.Join(configHome, ProductName)
 		}
 	}
 
@@ -49,7 +52,7 @@ var Path = func() *path {
 	}
 
 	return &path{homeDir: homeDir, configFile: "config.yaml", allowUnsafePath: allowUnsafePath, safePaths: safePaths}
-}()
+}
 
 type path struct {
 	homeDir         string
@@ -235,7 +238,7 @@ func (p *path) GetAssetLocation(file string) string {
 func (p *path) GetExecutableFullPath() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		return "mihomo"
+		return ProductName
 	}
 	res, _ := filepath.EvalSymlinks(exePath)
 	return res
