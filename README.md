@@ -26,7 +26,8 @@ rewrite. It will move to the Fluxgate namespace in a dedicated change.
 - [x] Configuration file source loading boundary
 - [x] Rule payload parsing boundary
 - [x] Simple rule construction boundary
-- [ ] DNS parsing and resolver boundary
+- [x] DNS nameserver parsing usable without application configuration initialization
+- [ ] DNS resolver behavior and lifecycle boundary
 - [ ] Controller API boundary
 - [ ] Inbound and outbound protocol boundaries
 - [ ] TUN and platform integration boundaries

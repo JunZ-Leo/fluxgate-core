@@ -1181,12 +1181,6 @@ func parseNameServer(servers []string, respectRules bool, preferH3 bool) ([]dns.
 	return dnsconfig.ParseNameServers(servers, respectRules, preferH3)
 }
 
-func init() {
-	dns.ParseNameServer = func(servers []string) ([]dns.NameServer, error) { // using by wireguard
-		return parseNameServer(servers, false, false)
-	}
-}
-
 func parseNameServerPolicy(nsPolicy *orderedmap.OrderedMap[string, any], adapterName string, ruleProviders map[string]P.RuleProvider, respectRules bool, preferH3 bool) ([]dns.Policy, error) {
 	var policy []dns.Policy
 
