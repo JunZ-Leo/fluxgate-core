@@ -5,6 +5,7 @@
 *.so
 *.dylib
 bin/*
+/fluxgate
 
 # Test binary, build with `go test -c`
 *.test
