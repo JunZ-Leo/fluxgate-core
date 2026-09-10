@@ -3,14 +3,13 @@ package dns
 import (
 	"context"
 	"fmt"
-	"github.com/metacubex/mihomo/component/resolver"
 	"net"
 	"runtime"
 	"sync"
-	"time"
 
 	"github.com/metacubex/mihomo/common/deque"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/tls"
@@ -39,82 +38,47 @@ func (t *dnsOverTLS) Address() string {
 }
 
 func (t *dnsOverTLS) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) {
-	// miekg/dns ExchangeContext doesn't respond to context cancel.
-	// this is a workaround
-	type result struct {
-		msg *D.Msg
-		err error
-	}
-	ch := make(chan result, 1)
-
-	go func() {
-		var msg *D.Msg
-		var err error
-		defer func() { ch <- result{msg, err} }()
-		for { // retry loop; only retry when reusing old conn
-			err = ctx.Err() // check context first
-			if err != nil {
-				return
-			}
-
-			var conn net.Conn
-			isOldConn := true
-
-			if !t.disableReuse {
-				t.access.Lock()
-				if t.connections.Len() > 0 {
-					conn = t.connections.PopBack()
-				}
-				t.access.Unlock()
-			}
-
-			if conn == nil {
-				conn, err = t.dialContext(ctx)
-				if err != nil {
-					return
-				}
-				isOldConn = false
-			}
-
-			dClient := &D.Client{
-				UDPSize: 4096,
-				Timeout: 5 * time.Second,
-			}
-			dConn := &D.Conn{
-				Conn:    conn,
-				UDPSize: dClient.UDPSize,
-			}
-
-			msg, _, err = dClient.ExchangeWithConn(m, dConn)
-			if err != nil {
-				_ = conn.Close()
-				conn = nil
-				if isOldConn { // retry
-					continue
-				}
-				return
-			}
-
-			if !t.disableReuse {
-				t.access.Lock()
-				if t.connections.Len() >= maxOldDotConns {
-					oldConn := t.connections.PopFront()
-					go oldConn.Close() // close in a new goroutine, not blocking the current task
-				}
-				t.connections.PushBack(conn)
-				t.access.Unlock()
-			} else {
-				_ = conn.Close()
-			}
-			return
+	for { // Only retry when reusing an old connection.
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case ret := <-ch:
-		return ret.msg, ret.err
+		var conn net.Conn
+		isOldConn := true
+		if !t.disableReuse {
+			t.access.Lock()
+			if t.connections.Len() > 0 {
+				conn = t.connections.PopBack()
+			}
+			t.access.Unlock()
+		}
+		if conn == nil {
+			var err error
+			conn, err = t.dialContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			isOldConn = false
+		}
+		msg, err := exchangeWithConn(ctx, conn, m)
+		if err != nil {
+			_ = dnsTransportConn(conn).Close()
+			if isOldConn {
+				continue
+			}
+			return msg, err
+		}
+		if !t.disableReuse {
+			t.access.Lock()
+			if t.connections.Len() >= maxOldDotConns {
+				oldConn := t.connections.PopFront()
+				go oldConn.Close()
+			}
+			t.connections.PushBack(conn)
+			t.access.Unlock()
+		} else {
+			_ = dnsTransportConn(conn).Close()
+		}
+		return msg, nil
 	}
 }
 
