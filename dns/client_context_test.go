@@ -86,11 +86,9 @@ func TestDoTCancelClosesBorrowedConnection(t *testing.T) {
 func TestClientCancelClosesTCPConnection(t *testing.T) {
 	for _, network := range []string{"tcp", "udp-to-tcp"} {
 		t.Run(network, func(t *testing.T) {
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			listener, udp, err := ListenLocalDNSPair()
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = listener.Close() })
-			udp, err := net.ListenPacket("udp4", listener.Addr().String())
-			require.NoError(t, err)
 			t.Cleanup(func() { _ = udp.Close() })
 			udpDone := make(chan error, 1)
 			if network == "udp-to-tcp" {

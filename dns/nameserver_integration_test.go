@@ -52,11 +52,9 @@ func TestParsedNameServerResolvesLocally(t *testing.T) {
 		{"UDP retries truncated reply over TCP", "udp://", true, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			listener, packetConn, err := dns.ListenLocalDNSPair()
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = listener.Close() })
-			packetConn, err := net.ListenPacket("udp4", listener.Addr().String())
-			require.NoError(t, err)
 			t.Cleanup(func() { _ = packetConn.Close() })
 			var udpQueries, tcpQueries atomic.Int32
 			handler := D.HandlerFunc(func(w D.ResponseWriter, query *D.Msg) {
