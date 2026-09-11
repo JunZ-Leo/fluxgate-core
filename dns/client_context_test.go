@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -256,4 +257,35 @@ func TestDoTAlreadyCanceledDoesNotBorrow(t *testing.T) {
 		t.Fatal("an already canceled request must not touch an idle connection")
 	default:
 	}
+}
+
+type dnsTestSession struct {
+	closed bool
+}
+
+func (s *dnsTestSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+type dnsTestStream struct {
+	net.Conn
+	session *dnsTestSession
+}
+
+func (s *dnsTestStream) Upstream() any { return s.session }
+
+func TestDNSAbortStopsAtStreamEndpoint(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	session := &dnsTestSession{}
+	stream := &dnsTestStream{Conn: local, session: session}
+	wrapper := &cleanupDNSWrapper{Conn: stream, cleaned: make(chan struct{})}
+	require.NoError(t, remote.SetReadDeadline(time.Now().Add(contextTestTimeout)))
+	// The stream owns a connection, but its parent session is shared.
+	_ = dnsTransportConn(wrapper).Close()
+	awaitContextTest(t, wrapper.cleaned)
+	require.False(t, session.closed)
+	_, err := remote.Read(make([]byte, 1))
+	require.ErrorIs(t, err, io.EOF)
 }

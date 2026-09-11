@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	N "github.com/metacubex/mihomo/common/net"
 	MTLS "github.com/metacubex/tls"
 	D "github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
@@ -158,6 +159,71 @@ func TestDoTCancelWithoutDrainingTLSCloseNotify(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, awaitContextTest(t, done), context.Canceled)
 	awaitContextTest(t, transport.closed)
+}
+
+type cleanupDNSWrapper struct {
+	net.Conn
+	cleaned chan struct{}
+	once    sync.Once
+}
+
+func (c *cleanupDNSWrapper) Upstream() any { return c.Conn }
+
+func (c *cleanupDNSWrapper) Close() error {
+	c.once.Do(func() { close(c.cleaned) })
+	return c.Conn.Close()
+}
+
+func TestDoTCancelThroughNestedTLSProxy(t *testing.T) {
+	local, remote := net.Pipe()
+	transport := &watchedDNSConn{Conn: local, closed: make(chan struct{})}
+	readTracker := &readTrackingDNSConn{Conn: transport, reading: make(chan struct{})}
+	cert := dotContextCertificate(t)
+	proxyServer := tls.Server(remote, &tls.Config{Certificates: []tls.Certificate{cert}})
+	dnsServer := tls.Server(proxyServer, &tls.Config{Certificates: []tls.Certificate{cert}})
+	proxyClient := MTLS.Client(readTracker, &MTLS.Config{InsecureSkipVerify: true})
+	wrapper := &cleanupDNSWrapper{
+		Conn: N.NewRefConn(proxyClient, new(int)), cleaned: make(chan struct{}),
+	}
+	dnsClient := MTLS.Client(wrapper, &MTLS.Config{InsecureSkipVerify: true})
+	releasePeer, peerStopped := make(chan struct{}), make(chan struct{})
+	queryRead := make(chan error, 1)
+	t.Cleanup(func() {
+		_ = transport.Close()
+		_ = remote.Close()
+		close(releasePeer)
+		<-peerStopped
+	})
+	go func() {
+		defer close(peerStopped)
+		_, err := (&D.Conn{Conn: dnsServer}).ReadMsg()
+		queryRead <- err
+		<-releasePeer
+	}()
+	handshake, stopHandshake := context.WithTimeout(context.Background(), contextTestTimeout)
+	defer stopHandshake()
+	require.NoError(t, proxyClient.HandshakeContext(handshake))
+	require.NoError(t, dnsClient.HandshakeContext(handshake))
+	readTracker.enabled.Store(true)
+	client := &dnsOverTLS{}
+	client.connections.PushBack(dnsClient)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ExchangeContext(ctx, new(D.Msg).SetQuestion("nested.test.", D.TypeA))
+		done <- err
+	}()
+	require.NoError(t, awaitContextTest(t, queryRead))
+	awaitContextTest(t, readTracker.reading)
+	cancel()
+	require.ErrorIs(t, awaitContextTest(t, done), context.Canceled)
+	awaitContextTest(t, transport.closed)
+	awaitContextTest(t, wrapper.cleaned)
+	client.access.Lock()
+	pooled := client.connections.Len()
+	client.access.Unlock()
+	require.Zero(t, pooled)
 }
 
 type readTrackingDNSConn struct {
