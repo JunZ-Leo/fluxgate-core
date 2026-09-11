@@ -6,16 +6,47 @@ import (
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/tls"
 	D "github.com/miekg/dns"
 )
 
 func dnsTransportConn(conn net.Conn) net.Conn {
-	if tlsConn, ok := conn.(*tls.Conn); ok {
-		// A canceled or discarded connection must not wait for close_notify.
-		return tlsConn.NetConn()
+	return &dnsAbortConn{Conn: conn}
+}
+
+type dnsAbortConn struct {
+	net.Conn
+}
+
+func (c *dnsAbortConn) Close() error {
+	transport := c.Conn
+	unwrapped := false
+	for {
+		var next net.Conn
+		switch wrapper := transport.(type) {
+		case interface{ NetConn() net.Conn }:
+			next = wrapper.NetConn()
+		case N.WithUpstream:
+			// Stop at logical stream endpoints; do not follow a shared
+			// session or transport that is not itself a net.Conn wrapper.
+			next, _ = wrapper.Upstream().(net.Conn)
+		}
+		if next == nil {
+			break
+		}
+		transport = next
+		unwrapped = true
 	}
-	return conn
+	var err error
+	if unwrapped {
+		// Interrupt the underlying connection before a TLS/WebSocket wrapper
+		// can attempt a blocking graceful shutdown.
+		err = transport.Close()
+	}
+	closeErr := c.Conn.Close() // Preserve tracker and per-wrapper cleanup.
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 func exchangeWithConn(ctx context.Context, conn net.Conn, query *D.Msg) (msg *D.Msg, err error) {
