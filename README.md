@@ -67,6 +67,9 @@ including a TCP retry after a truncated UDP reply. Canceled DoT exchanges are
 not returned to the connection pool; successful exchanges remain reusable.
 The existing per-exchange timeout is unchanged. This does not cancel shared
 resolver queries or change the resolver's background cache-refresh policy.
+Resetting the DoT pool drains idle connections and prevents connections borrowed
+or dialed before the reset from being pooled again. Their in-flight queries may
+still finish; later exchanges can establish and reuse fresh connections.
 
 ## Features
 
