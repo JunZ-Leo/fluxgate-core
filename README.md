@@ -62,6 +62,12 @@ capabilities are unchanged.
 - [ ] Inbound and outbound protocol boundaries
 - [ ] TUN and platform integration boundaries
 
+DNS transport cancellation closes the active UDP/TCP or DNS-over-TLS connection,
+including a TCP retry after a truncated UDP reply. Canceled DoT exchanges are
+not returned to the connection pool; successful exchanges remain reusable.
+The existing per-exchange timeout is unchanged. This does not cancel shared
+resolver queries or change the resolver's background cache-refresh policy.
+
 ## Features
 
 - Local HTTP/HTTPS/SOCKS server with authentication support
